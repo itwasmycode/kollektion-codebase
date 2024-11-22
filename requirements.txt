@@ -1,0 +1,14 @@
+numpy
+pandas
+Pillow
+scikit-learn
+tensorflow
+boto3
+joblib
+pymysql
+requests
+transformers
+deep-translator
+torch
+torchvision
+scikit-image

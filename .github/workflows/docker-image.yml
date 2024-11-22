@@ -18,7 +18,7 @@ jobs:
           AWS_REGION: ${{ secrets.REGION }}
           AWS_REPO_URI: ${{ secrets.KOLKN_URI }}
         run: |
-          echo ${{ secrets.PASS_KOLKN }} | docker login --username ${{ secrets.IAM_KOLKN }} --password-stdin $AWS_REPO_URI
+          aws ecr get-login-password --region ${{ secrets.REGION }} | docker login --username AWS --password-stdin $AWS_REPO_URI
 
       - name: Build Docker image
         run: |

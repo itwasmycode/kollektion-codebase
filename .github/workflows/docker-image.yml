@@ -34,4 +34,4 @@ jobs:
 
       - name: Push Docker image to ECR
         run: |
-          docker push ${{ secrets.KOLKN_URI }}/${{ secrets.KOLKN_REPO }}:latest
+          docker push ${{ secrets.KOLKN_URI }}:latest

@@ -30,7 +30,7 @@ jobs:
 
       - name: Tag Docker image for ECR
         run: |
-          docker tag ${{ secrets.KOLKN_REPO }}:latest ${{ secrets.KOLKN_URI }}/${{ secrets.KOLKN_REPO }}:latest
+          docker tag ${{ secrets.KOLKN_REPO }}:latest ${{ secrets.KOLKN_URI }}:latest
 
       - name: Push Docker image to ECR
         run: |

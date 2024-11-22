@@ -21,24 +21,17 @@ jobs:
           aws-region: ${{ secrets.REGION }}
 
       - name: Login to Amazon ECR
-        env:
-          AWS_REGION: ${{ secrets.REGION }}
-          AWS_REPO_URI: ${{ secrets.KOLKN_URI }}
         run: |
-          aws ecr get-login-password --region ${{ secrets.REGION }} | docker login --username AWS --password-stdin $AWS_REPO_URI
+          aws ecr get-login-password --region ${{ secrets.REGION }} | docker login --username AWS --password-stdin ${{ secrets.KOLKN_URI }}
 
       - name: Build Docker image
         run: |
           docker build -t ${{ secrets.KOLKN_REPO }}:latest .
 
       - name: Tag Docker image for ECR
-        env:
-          AWS_REPO_URI: ${{ secrets.KOLKN_URI }}
         run: |
-          docker tag ${{ secrets.KOLKN_REPO }}:latest $AWS_REPO_URI/${{ secrets.KOLKN_REPO }}:latest
+          docker tag ${{ secrets.KOLKN_REPO }}:latest ${{ secrets.KOLKN_URI }}/${{ secrets.KOLKN_REPO }}:latest
 
       - name: Push Docker image to ECR
-        env:
-          AWS_REPO_URI: ${{ secrets.KOLKN_URI }}
         run: |
-          docker push $AWS_REPO_URI/${{ secrets.KOLKN_REPO }}:latest
+          docker push ${{ secrets.KOLKN_URI }}/${{ secrets.KOLKN_REPO }}:latest

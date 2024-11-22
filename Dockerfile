@@ -1,14 +1,10 @@
 # Start from a Python 3.12 image
 FROM public.ecr.aws/lambda/python:3.12
 
-# Set the working directory.
-WORKDIR /var/task
-
 # Copy requirements.txt to the container
-COPY requirements.txt /var/task/
+COPY requirements.txt ${LAMBDA_TASK_ROOT}
 
-# Install the dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
 # Copy the entire project directory to the container
-COPY . /var/task/
+COPY . ${LAMBDA_TASK_ROOT}

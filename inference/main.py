@@ -1,10 +1,11 @@
 import os
+import json
 import boto3
 import numpy as np
 from tensorflow.keras.applications import ResNet50
 from tensorflow.keras.applications.resnet50 import preprocess_input
 from tensorflow.keras.preprocessing.image import img_to_array, load_img
-import requests
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Initialize ResNet50
 model = ResNet50(weights="imagenet", include_top=False, pooling="avg")
@@ -19,6 +20,7 @@ if not S3_BUCKET or not TENANT_NAME or not IMAGE_DIR:
 
 s3 = boto3.client('s3')
 
+
 def list_images_in_s3_directory(bucket, directory):
     """List all images in the specified S3 directory."""
     response = s3.list_objects_v2(Bucket=bucket, Prefix=directory)
@@ -26,10 +28,12 @@ def list_images_in_s3_directory(bucket, directory):
         return []
     return [item['Key'] for item in response['Contents'] if item['Key'].lower().endswith(('.jpg', '.jpeg', '.png'))]
 
+
 def download_image_from_s3(bucket, s3_key, local_filename):
     """Download an image from S3 to a local file."""
     s3.download_file(bucket, s3_key, local_filename)
     return local_filename
+
 
 def extract_features(image_path):
     """Extract features using ResNet50."""
@@ -40,21 +44,41 @@ def extract_features(image_path):
     features = model.predict(image)
     return features
 
-def download_model(tenant_name):
-    """Download the model artifact from S3."""
-    artifact_path = f"{tenant_name}_features.npy"
-    s3_key = f"{tenant_name}/artifacts/model_features.npy"
-    s3.download_file(S3_BUCKET, s3_key, artifact_path)
-    features = np.load(artifact_path)
-    os.remove(artifact_path)
-    return features
 
-def recommend(query_features, all_features, top_n=5):
-    """Find the top N similar items."""
-    from sklearn.metrics.pairwise import cosine_similarity
+def download_model_and_mapping(tenant_name):
+    """Download the model artifact and its mapping from S3."""
+    # Download features
+    features_path = f"{tenant_name}_features.npy"
+    s3_features_key = f"{tenant_name}/artifacts/model_features.npy"
+    s3.download_file(S3_BUCKET, s3_features_key, features_path)
+    features = np.load(features_path)
+    os.remove(features_path)
+
+    # Download JSON mapping
+    mapping_path = "mapping.json"
+    s3_mapping_key = f"{tenant_name}/artifacts/mapping.json"
+    s3.download_file(S3_BUCKET, s3_mapping_key, mapping_path)
+    with open(mapping_path, "r") as f:
+        mapping = json.load(f)
+    os.remove(mapping_path)
+
+    return features, mapping
+
+
+def recommend(query_features, all_features, mapping, top_n=5):
+    """Find the top N similar items with detailed metadata."""
     similarities = cosine_similarity(query_features, all_features)
-    indices = np.argsort(similarities[0])[::-1]
-    return indices[:top_n]
+    indices = np.argsort(similarities[0])[::-1][:top_n]
+    recommendations = [
+        {
+            "item_id": mapping[idx]["id"],
+            "item_category": mapping[idx]["categories"][0],
+            "item_image": mapping[idx]["images"][0],
+        }
+        for idx in indices
+    ]
+    return recommendations
+
 
 if __name__ == "__main__":
     # List images in the specified S3 directory
@@ -62,8 +86,8 @@ if __name__ == "__main__":
     if not image_keys:
         raise ValueError(f"No images found in the directory {IMAGE_DIR} in bucket {S3_BUCKET}.")
 
-    # Load tenant-specific model features from S3
-    all_features = download_model(TENANT_NAME)
+    # Load tenant-specific model features and mapping from S3
+    all_features, mapping = download_model_and_mapping(TENANT_NAME)
 
     # Process each image and recommend items
     for image_key in image_keys:
@@ -74,8 +98,10 @@ if __name__ == "__main__":
             query_features = extract_features(local_image_path)
 
             # Recommend items for the current image
-            recommendations = recommend(query_features, all_features)
-            print(f"Recommended item indices for image {image_key}: {recommendations}")
+            recommendations = recommend(query_features, all_features, mapping)
+            print(f"Recommended items for image {image_key}:")
+            for rec in recommendations:
+                print(f"- item_id: {rec['item_id']}, item_category: {rec['item_category']}, item_image: {rec['item_image']}")
         except Exception as e:
             print(f"Error processing image {image_key}: {e}")
         finally:

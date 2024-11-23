@@ -19,6 +19,7 @@ if not S3_BUCKET or not TENANT_NAME:
 
 s3_client = boto3.client('s3')
 
+
 def download_image_and_upload_to_s3(url, tenant_name, filename):
     """Download image from a URL and upload to S3."""
     tenant_images_s3_path = f"{tenant_name}_images/{filename}"
@@ -39,6 +40,7 @@ def download_image_and_upload_to_s3(url, tenant_name, filename):
         print(f"Error downloading image from {url}: {e}")
     return None  # Return None if the download fails
 
+
 def extract_features(image_path):
     """Extract features using ResNet50."""
     image = load_img(image_path, target_size=(224, 224))
@@ -48,14 +50,16 @@ def extract_features(image_path):
     features = model.predict(image)
     return features
 
+
 def download_json_from_s3(bucket, s3_key, local_file):
     """Download a JSON file from S3."""
     s3_client.download_file(bucket, s3_key, local_file)
     print(f"Downloaded {s3_key} from S3 to {local_file}")
     return local_file
 
+
 def process_json(s3_key, tenant_name):
-    """Process the JSON file from S3 and store the model in S3."""
+    """Process the JSON file from S3 and store features and mapping in S3."""
     # Download JSON from S3
     local_json_file = "temp.json"
     download_json_from_s3(S3_BUCKET, s3_key, local_json_file)
@@ -66,7 +70,8 @@ def process_json(s3_key, tenant_name):
 
     # Extract features for all images
     all_features = []
-    for item in data:
+    mapping = []
+    for idx, item in enumerate(data):
         image_url = item["images"][0]  # Use the first image
         image_filename = os.path.basename(image_url)
         image_s3_key = download_image_and_upload_to_s3(image_url, tenant_name, image_filename)
@@ -79,6 +84,13 @@ def process_json(s3_key, tenant_name):
                 # Extract features
                 features = extract_features(local_image_path)
                 all_features.append(features)
+
+                # Add mapping entry
+                mapping.append({
+                    "id": item["id"],
+                    "categories": item["categories"],
+                    "images": item["images"]
+                })
 
                 # Clean up local temporary file
                 os.remove(local_image_path)
@@ -95,14 +107,24 @@ def process_json(s3_key, tenant_name):
         artifact_path = f"{tenant_name}_features.npy"
         np.save(artifact_path, all_features)
 
-        # Upload the artifact to S3
-        artifact_s3_key = f"{tenant_name}/artifacts/model_features.npy"
-        s3_client.upload_file(artifact_path, S3_BUCKET, artifact_s3_key)
-        os.remove(artifact_path)
+        # Save mapping to a local file
+        mapping_path = "mapping.json"
+        with open(mapping_path, "w") as f:
+            json.dump(mapping, f)
 
-        print(f"Features saved and uploaded to S3: {artifact_s3_key}")
+        # Upload the artifact and mapping to S3
+        artifact_s3_key = f"{tenant_name}/artifacts/model_features.npy"
+        mapping_s3_key = f"{tenant_name}/artifacts/mapping.json"
+        s3_client.upload_file(artifact_path, S3_BUCKET, artifact_s3_key)
+        s3_client.upload_file(mapping_path, S3_BUCKET, mapping_s3_key)
+
+        # Clean up local files
+        os.remove(artifact_path)
+        os.remove(mapping_path)
+
+        print(f"Features and mapping saved and uploaded to S3.")
     else:
-        print("No features extracted. Skipping model upload.")
+        print("No features extracted. Skipping upload.")
 
     os.remove(local_json_file)
 

@@ -14,12 +14,14 @@ model = ResNet50(weights="imagenet", include_top=False, pooling="avg")
 S3_BUCKET = os.environ.get("S3_BUCKET")
 TENANT_NAME = os.environ.get("TENANT_NAME")
 DYNAMO_TABLE = os.environ.get("DYNAMO_TABLE")  # DynamoDB table for versioning
+REGION = os.environ.get("REGION")
 
 if not S3_BUCKET or not TENANT_NAME or not DYNAMO_TABLE:
     raise ValueError("S3_BUCKET, TENANT_NAME, and DYNAMO_TABLE must be set in the environment variables.")
 
 s3_client = boto3.client('s3')
-dynamo_client = boto3.client('dynamodb')
+dynamo_client = boto3.client('dynamodb',
+                             region=REGION)
 
 def increment_version(dynamo_table):
     """Increment version number stored in DynamoDB."""

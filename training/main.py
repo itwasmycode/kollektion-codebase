@@ -21,7 +21,7 @@ if not S3_BUCKET or not TENANT_NAME or not DYNAMO_TABLE:
 
 s3_client = boto3.client('s3')
 dynamo_client = boto3.client('dynamodb',
-                             region=REGION)
+                             region_name=REGION)
 
 def increment_version(dynamo_table):
     """Increment version number stored in DynamoDB."""

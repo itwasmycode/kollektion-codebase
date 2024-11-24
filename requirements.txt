@@ -12,3 +12,4 @@ deep-translator
 torch
 torchvision
 scikit-image
+psycopg2

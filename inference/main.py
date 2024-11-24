@@ -71,6 +71,25 @@ def connect_to_rds():
     except Exception as e:
         raise RuntimeError(f"Failed to connect to RDS: {e}")
 
+def create_table_if_not_exists(conn):
+    """Create the Recommendations table if it does not exist."""
+    create_table_query = """
+    CREATE TABLE IF NOT EXISTS Recommendations (
+        item_id SERIAL PRIMARY KEY,
+        recommendations JSONB NOT NULL,
+        version VARCHAR(20) NOT NULL,
+        revision INT DEFAULT 1
+    );
+    """
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(create_table_query)
+            conn.commit()
+            print("Table 'Recommendations' is ready.")
+    except Exception as e:
+        conn.rollback()
+        raise RuntimeError(f"Failed to create table: {e}")
+
 def write_recommendations_to_rds(conn, item_id, recommendations, version):
     """Write recommendations to RDS."""
     cursor = conn.cursor()
@@ -121,6 +140,7 @@ if __name__ == "__main__":
                 current_item["categories"][0],
                 category_compatibility
             )
+            create_table_if_not_exists(conn)
             write_recommendations_to_rds(conn, current_item["id"], recommendations, VERSION)
             os.remove(local_image_path)
     finally:

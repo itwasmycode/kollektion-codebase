@@ -2,6 +2,7 @@ import os
 import json
 import boto3
 import numpy as np
+import psycopg2
 from tensorflow.keras.applications import ResNet50
 from tensorflow.keras.applications.resnet50 import preprocess_input
 from tensorflow.keras.preprocessing.image import img_to_array, load_img
@@ -10,16 +11,21 @@ from sklearn.metrics.pairwise import cosine_similarity
 # Initialize ResNet50
 model = ResNet50(weights="imagenet", include_top=False, pooling="avg")
 
-# AWS S3 Configuration
+# AWS and RDS Configuration
 S3_BUCKET = os.environ.get("S3_BUCKET")
 TENANT_NAME = os.environ.get("TENANT_NAME")
-IMAGE_DIR = os.environ.get("IMAGE_DIR")  # Directory in S3 containing images
+IMAGE_DIR = os.environ.get("IMAGE_DIR")
+RDS_HOST = os.environ.get("RDS_HOST")
+RDS_PORT = os.environ.get("RDS_PORT", 5432)
+RDS_USER = os.environ.get("RDS_USER")
+RDS_PASSWORD = os.environ.get("RDS_PASSWORD")
+RDS_DATABASE = os.environ.get("RDS_DATABASE")
+VERSION = os.environ.get("VERSION")
 
-if not S3_BUCKET or not TENANT_NAME or not IMAGE_DIR:
-    raise ValueError("S3_BUCKET, TENANT_NAME, and IMAGE_DIR must be set in the environment variables.")
+if not all([S3_BUCKET, TENANT_NAME, IMAGE_DIR, RDS_HOST, RDS_USER, RDS_PASSWORD, RDS_DATABASE, VERSION]):
+    raise ValueError("All required environment variables must be set.")
 
 s3 = boto3.client('s3')
-
 
 def list_images_in_s3_directory(bucket, directory):
     """List all images in the specified S3 directory."""
@@ -28,12 +34,10 @@ def list_images_in_s3_directory(bucket, directory):
         return []
     return [item['Key'] for item in response['Contents'] if item['Key'].lower().endswith(('.jpg', '.jpeg', '.png'))]
 
-
 def download_image_from_s3(bucket, s3_key, local_filename):
     """Download an image from S3 to a local file."""
     s3.download_file(bucket, s3_key, local_filename)
     return local_filename
-
 
 def extract_features(image_path):
     """Extract features using ResNet50."""
@@ -44,66 +48,80 @@ def extract_features(image_path):
     features = model.predict(image)
     return features
 
+def download_category_compatibility(s3_bucket, tenant_name):
+    """Download category compatibility JSON from S3."""
+    compatibility_file = f"{tenant_name}/artifacts/category_compability.json"
+    local_file = "category_compability.json"
+    s3.download_file(s3_bucket, compatibility_file, local_file)
+    with open(local_file, "r") as f:
+        category_compatibility = json.load(f)
+    os.remove(local_file)
+    return category_compatibility
 
-def download_model_and_mapping(tenant_name):
-    """Download the model artifact and its mapping from S3."""
-    # Download features
-    features_path = f"{tenant_name}_features.npy"
-    s3_features_key = f"{tenant_name}/artifacts/model_features.npy"
-    s3.download_file(S3_BUCKET, s3_features_key, features_path)
-    features = np.load(features_path)
-    os.remove(features_path)
+def connect_to_rds():
+    """Connect to RDS."""
+    try:
+        return psycopg2.connect(
+            host=RDS_HOST,
+            port=RDS_PORT,
+            user=RDS_USER,
+            password=RDS_PASSWORD,
+            database=RDS_DATABASE
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to RDS: {e}")
 
-    # Download JSON mapping
-    mapping_path = "mapping.json"
-    s3_mapping_key = f"{tenant_name}/artifacts/mapping.json"
-    s3.download_file(S3_BUCKET, s3_mapping_key, mapping_path)
-    with open(mapping_path, "r") as f:
-        mapping = json.load(f)
-    os.remove(mapping_path)
+def write_recommendations_to_rds(conn, item_id, recommendations, version):
+    """Write recommendations to RDS."""
+    cursor = conn.cursor()
+    sql = """
+    INSERT INTO Recommendations (item_id, recommendations, version, revision)
+    VALUES (%s, %s, %s, %s)
+    ON CONFLICT (item_id) DO UPDATE
+    SET recommendations = EXCLUDED.recommendations,
+        version = EXCLUDED.version,
+        revision = Recommendations.revision + 1;
+    """
+    cursor.execute(sql, (item_id, json.dumps(recommendations), version, 1))
+    conn.commit()
+    cursor.close()
 
-    return features, mapping
-
-
-def recommend(query_features, all_features, mapping, top_n=5):
-    """Find the top N similar items with detailed metadata."""
-    similarities = cosine_similarity(query_features, all_features)
-    indices = np.argsort(similarities[0])[::-1][:top_n]
-    recommendations = [
-        {
-            "item_id": mapping[idx]["id"],
-            "item_category": mapping[idx]["categories"][0],
-            "item_image": mapping[idx]["images"][0],
-        }
-        for idx in indices
-    ]
-    return recommendations
-
+def recommend(query_features, all_features, mapping, query_category, category_compatibility):
+    """Generate recommendations."""
+    compatible_categories = category_compatibility.get(query_category, [])
+    indices = [i for i, item in enumerate(mapping) if any(cat in compatible_categories for cat in item["categories"])]
+    compatible_features = all_features[indices]
+    similarities = cosine_similarity(query_features, compatible_features)
+    sorted_indices = np.argsort(similarities[0])[::-1][:5]
+    return [mapping[indices[i]] for i in sorted_indices]
 
 if __name__ == "__main__":
-    # List images in the specified S3 directory
-    image_keys = list_images_in_s3_directory(S3_BUCKET, IMAGE_DIR)
-    if not image_keys:
-        raise ValueError(f"No images found in the directory {IMAGE_DIR} in bucket {S3_BUCKET}.")
+    conn = connect_to_rds()
+    try:
+        # Load features and mapping
+        s3.download_file(S3_BUCKET, f"{TENANT_NAME}/artifacts/{TENANT_NAME}_features.npy", "features.npy")
+        s3.download_file(S3_BUCKET, f"{TENANT_NAME}/artifacts/mapping.json", "mapping.json")
+        all_features = np.load("features.npy")
+        with open("mapping.json", "r") as f:
+            mapping = json.load(f)
 
-    # Load tenant-specific model features and mapping from S3
-    all_features, mapping = download_model_and_mapping(TENANT_NAME)
+        # Download category compatibility
+        category_compatibility = download_category_compatibility(S3_BUCKET, TENANT_NAME)
 
-    # Process each image and recommend items
-    for image_key in image_keys:
-        local_image_path = "temp_image.jpg"
-        download_image_from_s3(S3_BUCKET, image_key, local_image_path)
-        try:
-            # Extract features for the current image
+        # Process recommendations
+        for image_key in list_images_in_s3_directory(S3_BUCKET, IMAGE_DIR):
+            local_image_path = "temp_image.jpg"
+            download_image_from_s3(S3_BUCKET, image_key, local_image_path)
             query_features = extract_features(local_image_path)
-
-            # Recommend items for the current image
-            recommendations = recommend(query_features, all_features, mapping)
-            print(f"Recommended items for image {image_key}:")
-            for rec in recommendations:
-                print(f"- item_id: {rec['item_id']}, item_category: {rec['item_category']}, item_image: {rec['item_image']}")
-        except Exception as e:
-            print(f"Error processing image {image_key}: {e}")
-        finally:
-            # Clean up local image file
+            current_item = next((item for item in mapping if image_key in item["images"]), None)
+            if not current_item:
+                continue
+            recommendations = recommend(
+                query_features, all_features, mapping,
+                current_item["categories"][0],
+                category_compatibility
+            )
+            write_recommendations_to_rds(conn, current_item["id"], recommendations, VERSION)
             os.remove(local_image_path)
+    finally:
+        conn.close()

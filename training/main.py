@@ -10,36 +10,31 @@ import requests
 # Initialize ResNet50
 model = ResNet50(weights="imagenet", include_top=False, pooling="avg")
 
-# AWS S3 Configuration
+# AWS Configuration
 S3_BUCKET = os.environ.get("S3_BUCKET")
 TENANT_NAME = os.environ.get("TENANT_NAME")
+DYNAMO_TABLE = os.environ.get("DYNAMO_TABLE")  # DynamoDB table for versioning
 
-if not S3_BUCKET or not TENANT_NAME:
-    raise ValueError("S3_BUCKET and TENANT_NAME must be set in the environment variables.")
+if not S3_BUCKET or not TENANT_NAME or not DYNAMO_TABLE:
+    raise ValueError("S3_BUCKET, TENANT_NAME, and DYNAMO_TABLE must be set in the environment variables.")
 
 s3_client = boto3.client('s3')
+dynamo_client = boto3.client('dynamodb')
 
-
-def download_image_and_upload_to_s3(url, tenant_name, filename):
-    """Download image from a URL and upload to S3."""
-    tenant_images_s3_path = f"{tenant_name}_images/{filename}"
+def increment_version(dynamo_table):
+    """Increment version number stored in DynamoDB."""
     try:
-        response = requests.get(url, timeout=10)  # Add a timeout to avoid hanging
-        if response.status_code == 200:
-            s3_client.put_object(
-                Bucket=S3_BUCKET,
-                Key=tenant_images_s3_path,
-                Body=response.content,
-                ContentType="image/jpeg"
-            )
-            print(f"Image uploaded to S3: {tenant_images_s3_path}")
-            return tenant_images_s3_path
-        else:
-            print(f"Failed to download image. HTTP status code: {response.status_code}")
-    except requests.RequestException as e:
-        print(f"Error downloading image from {url}: {e}")
-    return None  # Return None if the download fails
-
+        response = dynamo_client.update_item(
+            TableName=dynamo_table,
+            Key={"key": {"S": "version"}},
+            UpdateExpression="SET #val = if_not_exists(#val, :start) + :incr",
+            ExpressionAttributeNames={"#val": "value"},
+            ExpressionAttributeValues={":start": {"N": "0"}, ":incr": {"N": "1"}},
+            ReturnValues="UPDATED_NEW"
+        )
+        return response["Attributes"]["value"]["N"]
+    except Exception as e:
+        raise RuntimeError(f"Failed to update version in DynamoDB: {e}")
 
 def extract_features(image_path):
     """Extract features using ResNet50."""
@@ -47,92 +42,51 @@ def extract_features(image_path):
     image = img_to_array(image)
     image = np.expand_dims(image, axis=0)
     image = preprocess_input(image)
-    features = model.predict(image)
-    return features
+    return model.predict(image)
 
-
-def download_json_from_s3(bucket, s3_key, local_file):
-    """Download a JSON file from S3."""
-    s3_client.download_file(bucket, s3_key, local_file)
-    print(f"Downloaded {s3_key} from S3 to {local_file}")
-    return local_file
-
-
-def process_json(s3_key, tenant_name):
+def process_json(s3_key, tenant_name, dynamo_table):
     """Process the JSON file from S3 and store features and mapping in S3."""
-    # Download JSON from S3
-    local_json_file = "temp.json"
-    download_json_from_s3(S3_BUCKET, s3_key, local_json_file)
+    version = increment_version(dynamo_table)
+    print(f"Processing version: {version}")
 
-    # Load JSON data
+    local_json_file = "temp.json"
+    s3_client.download_file(S3_BUCKET, s3_key, local_json_file)
+
     with open(local_json_file, "r") as f:
         data = json.load(f)
 
-    # Extract features for all images
-    all_features = []
-    mapping = []
-    for idx, item in enumerate(data):
-        image_url = item["images"][0]  # Use the first image
+    features, mapping = [], []
+    for item in data:
+        image_url = item["images"][0]
         image_filename = os.path.basename(image_url)
-        image_s3_key = download_image_and_upload_to_s3(image_url, tenant_name, image_filename)
-        if image_s3_key:  # Only process if the image was uploaded successfully
-            try:
-                # Download the image from S3 to a local temporary file
-                local_image_path = "temp.jpg"
-                s3_client.download_file(S3_BUCKET, image_s3_key, local_image_path)
+        response = requests.get(image_url, timeout=10)
+        if response.status_code == 200:
+            image_path = "temp.jpg"
+            with open(image_path, "wb") as img_file:
+                img_file.write(response.content)
+            feature_vector = extract_features(image_path)
+            features.append(feature_vector)
+            mapping.append({
+                "id": item["id"],
+                "categories": item["categories"],
+                "images": item["images"]
+            })
+            os.remove(image_path)
 
-                # Extract features
-                features = extract_features(local_image_path)
-                all_features.append(features)
+    features = np.vstack(features)
+    np.save(f"{tenant_name}_features.npy", features)
+    with open("mapping.json", "w") as f:
+        json.dump(mapping, f)
 
-                # Add mapping entry
-                mapping.append({
-                    "id": item["id"],
-                    "categories": item["categories"],
-                    "images": item["images"]
-                })
+    s3_client.upload_file(f"{tenant_name}_features.npy", S3_BUCKET, f"{tenant_name}/artifacts/{tenant_name}_features.npy")
+    s3_client.upload_file("mapping.json", S3_BUCKET, f"{tenant_name}/artifacts/mapping.json")
 
-                # Clean up local temporary file
-                os.remove(local_image_path)
-            except Exception as e:
-                print(f"Error extracting features for {image_url}: {e}")
-        else:
-            print(f"Skipping image {image_url} due to download failure.")
-
-    # Convert features to numpy array
-    if all_features:
-        all_features = np.vstack(all_features)
-
-        # Save features to a local file
-        artifact_path = f"{tenant_name}_features.npy"
-        np.save(artifact_path, all_features)
-
-        # Save mapping to a local file
-        mapping_path = "mapping.json"
-        with open(mapping_path, "w") as f:
-            json.dump(mapping, f)
-
-        # Upload the artifact and mapping to S3
-        artifact_s3_key = f"{tenant_name}/artifacts/model_features.npy"
-        mapping_s3_key = f"{tenant_name}/artifacts/mapping.json"
-        s3_client.upload_file(artifact_path, S3_BUCKET, artifact_s3_key)
-        s3_client.upload_file(mapping_path, S3_BUCKET, mapping_s3_key)
-
-        # Clean up local files
-        os.remove(artifact_path)
-        os.remove(mapping_path)
-
-        print(f"Features and mapping saved and uploaded to S3.")
-    else:
-        print("No features extracted. Skipping upload.")
-
+    os.remove(f"{tenant_name}_features.npy")
+    os.remove("mapping.json")
     os.remove(local_json_file)
 
-
 if __name__ == "__main__":
-    # Get environment variables
-    s3_key = os.environ.get("JSON_S3_KEY")  # The S3 key of the JSON file
+    s3_key = os.environ.get("JSON_S3_KEY")
     if not s3_key:
         raise ValueError("JSON_S3_KEY must be set in the environment variables.")
-
-    process_json(s3_key, TENANT_NAME)
+    process_json(s3_key, TENANT_NAME, DYNAMO_TABLE)

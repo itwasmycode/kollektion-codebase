@@ -13,7 +13,7 @@ model = ResNet50(weights="imagenet", include_top=False, pooling="avg")
 # AWS Configuration
 S3_BUCKET = os.environ.get("S3_BUCKET")
 TENANT_NAME = os.environ.get("TENANT_NAME")
-DYNAMO_TABLE = os.environ.get("DYNAMO_TABLE")  # DynamoDB table for versioning
+DYNAMO_TABLE = os.environ.get("DYNAMO_TABLE")
 REGION = os.environ.get("REGION")
 
 if not S3_BUCKET or not TENANT_NAME or not DYNAMO_TABLE:
@@ -21,7 +21,7 @@ if not S3_BUCKET or not TENANT_NAME or not DYNAMO_TABLE:
 
 s3_client = boto3.client('s3')
 dynamo_client = boto3.client('dynamodb',
-                             region_name=REGION)
+                             region_name="eu-central-1")
 
 def increment_version(dynamo_table):
     """Increment version number stored in DynamoDB."""
@@ -46,8 +46,14 @@ def extract_features(image_path):
     image = preprocess_input(image)
     return model.predict(image)
 
+def upload_image_to_s3(image_path, s3_key):
+    """Upload an image to S3."""
+    with open(image_path, "rb") as f:
+        s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=f, ContentType="image/jpeg")
+    print(f"Uploaded {image_path} to s3://{S3_BUCKET}/{s3_key}")
+
 def process_json(s3_key, tenant_name, dynamo_table):
-    """Process the JSON file from S3 and store features and mapping in S3."""
+    """Precompute features for catalog items and upload them to S3."""
     version = increment_version(dynamo_table)
     print(f"Processing version: {version}")
 
@@ -60,19 +66,26 @@ def process_json(s3_key, tenant_name, dynamo_table):
     features, mapping = [], []
     for item in data:
         image_url = item["images"][0]
-        image_filename = os.path.basename(image_url)
         response = requests.get(image_url, timeout=10)
         if response.status_code == 200:
             image_path = "temp.jpg"
             with open(image_path, "wb") as img_file:
                 img_file.write(response.content)
+
+            # Extract features
             feature_vector = extract_features(image_path)
             features.append(feature_vector)
+
+            # Upload image to S3
+            s3_key = f"{tenant_name}/images/{os.path.basename(image_url)}"
+            upload_image_to_s3(image_path, s3_key)
+
             mapping.append({
                 "id": item["id"],
                 "categories": item["categories"],
-                "images": item["images"]
+                "images": [s3_key]  # Store S3 path instead of original URL
             })
+
             os.remove(image_path)
 
     features = np.vstack(features)

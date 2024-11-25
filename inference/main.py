@@ -1,4 +1,3 @@
-
 import os
 import json
 import boto3
@@ -92,8 +91,10 @@ def create_table_if_not_exists(conn):
         raise RuntimeError(f"Failed to create table: {e}")
 
 def write_recommendations_to_rds(conn, item_id, recommendations, version):
-    """Write recommendations to RDS."""
+    """Write recommendations with multiple collections to RDS."""
     cursor = conn.cursor()
+    formatted_recommendations = json.dumps(recommendations)  # Format collections as JSON
+
     sql = '''
     INSERT INTO Recommendations (item_id, recommendations, version, revision)
     VALUES (%s, %s, %s, %s)
@@ -102,23 +103,46 @@ def write_recommendations_to_rds(conn, item_id, recommendations, version):
         version = EXCLUDED.version,
         revision = Recommendations.revision + 1;
     '''
-    cursor.execute(sql, (item_id, json.dumps(recommendations), version, 1))
+    cursor.execute(sql, (item_id, formatted_recommendations, version, 1))
     conn.commit()
     cursor.close()
 
-def recommend(query_features, all_features, mapping, query_category, category_compatibility):
-    """Generate recommendations."""
+
+def recommend(query_features, all_features, mapping, query_category, category_compatibility, num_collections=5, collection_size=5):
+    """Generate multiple collections of recommendations."""
     compatible_categories = category_compatibility.get(query_category, [])
     indices = [i for i, item in enumerate(mapping) if any(cat in compatible_categories for cat in item["categories"])]
-    
+
     if not indices:
         print(f"Warning: No compatible items found for category '{query_category}'")
         return []
-    
+
     compatible_features = all_features[indices]
     similarities = cosine_similarity(query_features, compatible_features)
-    sorted_indices = np.argsort(similarities[0])[::-1][:5]
-    return [mapping[indices[i]] for i in sorted_indices]
+
+    # Generate collections
+    collections = {}
+    already_used_indices = set()
+
+    for collection_id in range(1, num_collections + 1):
+        sorted_indices = np.argsort(similarities[0])[::-1]  # Sort by similarity
+        collection = []
+
+        for i in sorted_indices:
+            if indices[i] not in already_used_indices:
+                collection.append(mapping[indices[i]])
+                already_used_indices.add(indices[i])
+            if len(collection) == collection_size:
+                break
+
+        if len(collection) < collection_size:
+            print("Warning: Not enough unique items to create the collection.")
+            break
+
+        collections[str(collection_id)] = collection
+
+    return collections
+
 
 if __name__ == "__main__":
     conn = connect_to_rds()
@@ -133,23 +157,27 @@ if __name__ == "__main__":
         # Download category compatibility
         category_compatibility = download_category_compatibility(S3_BUCKET, TENANT_NAME)
 
-        # Process recommendations
         for image_key in list_images_in_s3_directory(S3_BUCKET, IMAGE_DIR):
             local_image_path = "temp_image.jpg"
             download_image_from_s3(S3_BUCKET, image_key, local_image_path)
             query_features = extract_features(local_image_path)
             current_item = next((item for item in mapping if image_key in item["images"]), None)
+        
             if not current_item:
                 print(f"Warning: Item for key '{image_key}' not found in mapping.")
                 continue
-            recommendations = recommend(
+        
+            collections = recommend(
                 query_features, all_features, mapping,
                 current_item["categories"][0],
                 category_compatibility
             )
-            if recommendations:
+        
+            if collections:
                 create_table_if_not_exists(conn)
-                write_recommendations_to_rds(conn, current_item["id"], recommendations, VERSION)
+                write_recommendations_to_rds(conn, current_item["id"], collections, VERSION)
+        
             os.remove(local_image_path)
+
     finally:
         conn.close()

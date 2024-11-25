@@ -1,3 +1,4 @@
+
 import os
 import json
 import boto3
@@ -73,14 +74,14 @@ def connect_to_rds():
 
 def create_table_if_not_exists(conn):
     """Create the Recommendations table if it does not exist."""
-    create_table_query = """
+    create_table_query = '''
     CREATE TABLE IF NOT EXISTS Recommendations (
         item_id SERIAL PRIMARY KEY,
         recommendations JSONB NOT NULL,
         version VARCHAR(20) NOT NULL,
         revision INT DEFAULT 1
     );
-    """
+    '''
     try:
         with conn.cursor() as cursor:
             cursor.execute(create_table_query)
@@ -93,14 +94,14 @@ def create_table_if_not_exists(conn):
 def write_recommendations_to_rds(conn, item_id, recommendations, version):
     """Write recommendations to RDS."""
     cursor = conn.cursor()
-    sql = """
+    sql = '''
     INSERT INTO Recommendations (item_id, recommendations, version, revision)
     VALUES (%s, %s, %s, %s)
     ON CONFLICT (item_id) DO UPDATE
     SET recommendations = EXCLUDED.recommendations,
         version = EXCLUDED.version,
         revision = Recommendations.revision + 1;
-    """
+    '''
     cursor.execute(sql, (item_id, json.dumps(recommendations), version, 1))
     conn.commit()
     cursor.close()
@@ -109,6 +110,11 @@ def recommend(query_features, all_features, mapping, query_category, category_co
     """Generate recommendations."""
     compatible_categories = category_compatibility.get(query_category, [])
     indices = [i for i, item in enumerate(mapping) if any(cat in compatible_categories for cat in item["categories"])]
+    
+    if not indices:
+        print(f"Warning: No compatible items found for category '{query_category}'")
+        return []
+    
     compatible_features = all_features[indices]
     similarities = cosine_similarity(query_features, compatible_features)
     sorted_indices = np.argsort(similarities[0])[::-1][:5]
@@ -134,14 +140,16 @@ if __name__ == "__main__":
             query_features = extract_features(local_image_path)
             current_item = next((item for item in mapping if image_key in item["images"]), None)
             if not current_item:
+                print(f"Warning: Item for key '{image_key}' not found in mapping.")
                 continue
             recommendations = recommend(
                 query_features, all_features, mapping,
                 current_item["categories"][0],
                 category_compatibility
             )
-            create_table_if_not_exists(conn)
-            write_recommendations_to_rds(conn, current_item["id"], recommendations, VERSION)
+            if recommendations:
+                create_table_if_not_exists(conn)
+                write_recommendations_to_rds(conn, current_item["id"], recommendations, VERSION)
             os.remove(local_image_path)
     finally:
         conn.close()

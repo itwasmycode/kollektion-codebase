@@ -156,11 +156,16 @@ def recommend(query_features, all_features, mapping, query_category, category_co
                         collection[-1] = item
                         break
 
+        # Handle cases where not all compatible categories are available
+        if len(collection) < len(compatible_categories):
+            print(f"Warning: Collection {collection_id} is missing categories. Filling with available items.")
+
         # Add to final collections and track used items
         collections[str(collection_id)] = collection
         used_items.update(collection)
 
     return collections
+
 
 
 

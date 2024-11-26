@@ -109,7 +109,7 @@ def write_recommendations_to_rds(conn, item_id, recommendations, version):
 
 
 def recommend(query_features, all_features, mapping, query_category, category_compatibility, num_collections=5, collection_size=5):
-    """Generate multiple collections of recommendations."""
+    """Generate multiple collections of recommendations ensuring unique categories."""
     compatible_categories = category_compatibility.get(query_category, [])
     indices = [i for i, item in enumerate(mapping) if any(cat in compatible_categories for cat in item["categories"])]
 
@@ -122,27 +122,35 @@ def recommend(query_features, all_features, mapping, query_category, category_co
 
     # Generate collections
     collections = {}
-    already_used_indices = set()
-
     for collection_id in range(1, num_collections + 1):
-        sorted_indices = np.argsort(similarities[0])[::-1]  # Sort by similarity
+        used_categories = set()
         collection = []
 
+        # Iterate over sorted items by similarity
+        sorted_indices = np.argsort(similarities[0])[::-1]
         for i in sorted_indices:
-            if indices[i] not in already_used_indices:
-                collection.append(mapping[indices[i]])
-                already_used_indices.add(indices[i])
+            item = mapping[indices[i]]
+            item_category = next(
+                (cat for cat in item["categories"] if cat in compatible_categories), None
+            )
+
+            if item_category and item_category not in used_categories:
+                collection.append(item)
+                used_categories.add(item_category)
+
             if len(collection) == collection_size:
                 break
 
+        # Check if the collection meets the size requirement
         if len(collection) < collection_size:
-            print("Warning: Not enough unique items to create the collection.")
+            print(
+                f"Warning: Not enough unique categories to create collection {collection_id}."
+            )
             break
 
         collections[str(collection_id)] = collection
 
     return collections
-
 
 if __name__ == "__main__":
     conn = connect_to_rds()

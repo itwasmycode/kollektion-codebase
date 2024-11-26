@@ -109,7 +109,7 @@ def write_recommendations_to_rds(conn, item_id, recommendations, version):
 
 
 def recommend(query_features, all_features, mapping, query_category, category_compatibility, num_collections=5, collection_size=5):
-    """Generate multiple collections of recommendations ensuring unique categories."""
+    """Generate collections ensuring unique categories and at least one different item per collection."""
     compatible_categories = category_compatibility.get(query_category, [])
     indices = [i for i, item in enumerate(mapping) if any(cat in compatible_categories for cat in item["categories"])]
 
@@ -122,17 +122,21 @@ def recommend(query_features, all_features, mapping, query_category, category_co
 
     # Generate collections
     collections = {}
+    used_items = set()  # Track items already used
+    used_categories = set()  # Track categories used in the current collection
+
     for collection_id in range(1, num_collections + 1):
-        used_categories = set()  # Track used categories for this collection
         collection = []
+        used_categories.clear()
 
         # Iterate over sorted items by similarity
         sorted_indices = np.argsort(similarities[0])[::-1]
         for i in sorted_indices:
             item = mapping[indices[i]]
-            # Find the first compatible category not already used
+            # Find the first category that hasn't been used in this collection
             item_category = next(
-                (cat for cat in item["categories"] if cat in compatible_categories and cat not in used_categories), None
+                (cat for cat in item["categories"] if cat in compatible_categories and cat not in used_categories),
+                None
             )
 
             if item_category:
@@ -142,14 +146,22 @@ def recommend(query_features, all_features, mapping, query_category, category_co
             if len(collection) == collection_size:
                 break
 
-        # Check if the collection meets the size requirement
-        if len(collection) < collection_size:
-            print(f"Warning: Not enough unique categories to create collection {collection_id}.")
-            break
+        # Ensure at least one different item in subsequent collections
+        if collection_id > 1:
+            previous_collection = collections[str(collection_id - 1)]
+            if all(item in previous_collection for item in collection):
+                for i in sorted_indices:
+                    item = mapping[indices[i]]
+                    if item not in collection and item not in used_items:
+                        collection[-1] = item
+                        break
 
+        # Add to final collections and track used items
         collections[str(collection_id)] = collection
+        used_items.update(collection)
 
     return collections
+
 
 
 if __name__ == "__main__":

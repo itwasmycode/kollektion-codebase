@@ -115,7 +115,7 @@ def recommend(query_features, all_features, mapping, query_category, category_co
 
     if not indices:
         print(f"Warning: No compatible items found for category '{query_category}'")
-        return []
+        return {}
 
     compatible_features = all_features[indices]
     similarities = cosine_similarity(query_features, compatible_features)
@@ -123,18 +123,19 @@ def recommend(query_features, all_features, mapping, query_category, category_co
     # Generate collections
     collections = {}
     for collection_id in range(1, num_collections + 1):
-        used_categories = set()
+        used_categories = set()  # Track used categories for this collection
         collection = []
 
         # Iterate over sorted items by similarity
         sorted_indices = np.argsort(similarities[0])[::-1]
         for i in sorted_indices:
             item = mapping[indices[i]]
+            # Find the first compatible category not already used
             item_category = next(
-                (cat for cat in item["categories"] if cat in compatible_categories), None
+                (cat for cat in item["categories"] if cat in compatible_categories and cat not in used_categories), None
             )
 
-            if item_category and item_category not in used_categories:
+            if item_category:
                 collection.append(item)
                 used_categories.add(item_category)
 
@@ -143,14 +144,13 @@ def recommend(query_features, all_features, mapping, query_category, category_co
 
         # Check if the collection meets the size requirement
         if len(collection) < collection_size:
-            print(
-                f"Warning: Not enough unique categories to create collection {collection_id}."
-            )
+            print(f"Warning: Not enough unique categories to create collection {collection_id}.")
             break
 
         collections[str(collection_id)] = collection
 
     return collections
+
 
 if __name__ == "__main__":
     conn = connect_to_rds()

@@ -122,7 +122,7 @@ def recommend(query_features, all_features, mapping, query_category, category_co
 
     # Generate collections
     collections = {}
-    used_items = set()  # Track items already used
+    used_item_ids = set()  # Track item IDs already used
     used_categories = set()  # Track categories used in the current collection
 
     for collection_id in range(1, num_collections + 1):
@@ -139,30 +139,27 @@ def recommend(query_features, all_features, mapping, query_category, category_co
                 None
             )
 
-            if item_category:
+            if item_category and item["id"] not in used_item_ids:
                 collection.append(item)
                 used_categories.add(item_category)
+                used_item_ids.add(item["id"])  # Track the ID instead of the entire dictionary
 
             if len(collection) == collection_size:
                 break
 
-        # Ensure at least one different item in subsequent collections
+        # Ensure the collection differs from previous ones by at least one item
         if collection_id > 1:
             previous_collection = collections[str(collection_id - 1)]
             if all(item in previous_collection for item in collection):
                 for i in sorted_indices:
                     item = mapping[indices[i]]
-                    if item not in collection and item not in used_items:
+                    if item["id"] not in used_item_ids:
                         collection[-1] = item
+                        used_item_ids.add(item["id"])  # Track the ID instead of the dictionary
                         break
 
-        # Handle cases where not all compatible categories are available
-        if len(collection) < len(compatible_categories):
-            print(f"Warning: Collection {collection_id} is missing categories. Filling with available items.")
-
-        # Add to final collections and track used items
+        # Add to final collections
         collections[str(collection_id)] = collection
-        used_items.update(collection)
 
     return collections
 

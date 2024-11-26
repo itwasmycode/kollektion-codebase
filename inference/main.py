@@ -122,47 +122,36 @@ def recommend(query_features, all_features, mapping, query_category, category_co
 
     # Generate collections
     collections = {}
-    used_item_ids = set()  # Track item IDs already used
-    used_categories = set()  # Track categories used in the current collection
-
     for collection_id in range(1, num_collections + 1):
         collection = []
-        used_categories.clear()
+        used_categories = set()
 
         # Iterate over sorted items by similarity
         sorted_indices = np.argsort(similarities[0])[::-1]
         for i in sorted_indices:
             item = mapping[indices[i]]
-            # Find the first category that hasn't been used in this collection
+            # Find the first unused category
             item_category = next(
                 (cat for cat in item["categories"] if cat in compatible_categories and cat not in used_categories),
                 None
             )
 
-            if item_category and item["id"] not in used_item_ids:
+            if item_category:
                 collection.append(item)
                 used_categories.add(item_category)
-                used_item_ids.add(item["id"])  # Track the ID instead of the entire dictionary
 
             if len(collection) == collection_size:
                 break
 
-        # Ensure the collection differs from previous ones by at least one item
-        if collection_id > 1:
-            previous_collection = collections[str(collection_id - 1)]
-            if all(item in previous_collection for item in collection):
-                for i in sorted_indices:
-                    item = mapping[indices[i]]
-                    if item["id"] not in used_item_ids:
-                        collection[-1] = item
-                        used_item_ids.add(item["id"])  # Track the ID instead of the dictionary
-                        break
+        # If not all compatible categories are used, log a warning
+        missing_categories = set(compatible_categories) - used_categories
+        if missing_categories:
+            print(f"Warning: Collection {collection_id} is missing categories: {missing_categories}")
 
-        # Add to final collections
+        # Add collection to results
         collections[str(collection_id)] = collection
 
     return collections
-
 
 
 

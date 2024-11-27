@@ -74,13 +74,14 @@ def connect_to_rds():
 def create_table_if_not_exists(conn):
     """Create the Recommendations table if it does not exist."""
     create_table_query = '''
-    CREATE TABLE IF NOT EXISTS Recommendations (
-        customer_id UUID PRIMARY KEY,
-        item_id INT NOT NULL,
-        recommendations JSONB NOT NULL,
-        version VARCHAR(20) NOT NULL,
-        revision INT DEFAULT 1
-    );
+        CREATE TABLE IF NOT EXISTS Recommendations (
+            customer_id UUID NOT NULL,
+            item_id INT NOT NULL,
+            recommendations JSONB NOT NULL,
+            version VARCHAR(20) NOT NULL,
+            revision INT DEFAULT 1,
+            PRIMARY KEY (customer_id, item_id)
+        );
     '''
     try:
         with conn.cursor() as cursor:
@@ -119,9 +120,8 @@ def write_recommendations_to_rds(conn, customer_id, item_id, recommendations, ve
     sql = '''
     INSERT INTO Recommendations (customer_id, item_id, recommendations, version, revision)
     VALUES (%s, %s, %s, %s, %s)
-    ON CONFLICT (customer_id) DO UPDATE
-    SET item_id = EXCLUDED.item_id,
-        recommendations = EXCLUDED.recommendations,
+    ON CONFLICT (customer_id, item_id) DO UPDATE
+    SET recommendations = EXCLUDED.recommendations,
         version = EXCLUDED.version,
         revision = Recommendations.revision + 1;
     '''
@@ -141,8 +141,9 @@ def recommend(query_features, all_features, mapping, query_category, category_co
     compatible_categories = category_compatibility.get(query_category, [])
     indices = [i for i, item in enumerate(mapping) if any(cat in compatible_categories for cat in item["categories"])]
 
+    # Exit early if no compatible items are found
     if not indices:
-        print(f"Warning: No compatible items found for category '{query_category}'")
+        print(f"No compatible items found for category '{query_category}'. Skipping recommendations.")
         return {}
 
     compatible_features = all_features[indices]
@@ -170,15 +171,14 @@ def recommend(query_features, all_features, mapping, query_category, category_co
                 if item["id"] not in used_items_per_category[category]
             ]
 
-            # If no unused items are left in this category, start reusing items
+            # If no unused items are left in this category, skip
             if not available_items:
-                available_items = category_groups[category]
+                continue
 
-            if available_items:
-                selected_item = available_items[0]  # Select the first available item
-                collection.append(selected_item)
-                used_items_per_category[category].add(selected_item["id"])
-                used_categories.add(category)
+            selected_item = available_items[0]  # Select the first available item
+            collection.append(selected_item)
+            used_items_per_category[category].add(selected_item["id"])
+            used_categories.add(category)
 
             if len(collection) == collection_size:
                 break
@@ -196,9 +196,12 @@ def recommend(query_features, all_features, mapping, query_category, category_co
                         collection[-1] = alternate_items[0]
                         break
 
-        collections[str(collection_id)] = collection
+        # Add collection only if it meets the minimum size
+        if collection:
+            collections[str(collection_id)] = collection
 
     return collections
+
 
 if __name__ == "__main__":
     conn = connect_to_rds()
@@ -231,12 +234,12 @@ if __name__ == "__main__":
                 current_item["categories"][0],
                 category_compatibility
             )
-        
+            
             if collections:
                 create_table_if_not_exists(conn)
                 write_recommendations_to_rds(conn, customer_id, current_item["id"], collections, VERSION)
-        
-            os.remove(local_image_path)
+            else:
+                print(f"No recommendations generated for item ID {current_item['id']}.")
 
     finally:
         conn.close()

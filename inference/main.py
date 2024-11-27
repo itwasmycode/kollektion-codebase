@@ -75,7 +75,8 @@ def create_table_if_not_exists(conn):
     """Create the Recommendations table if it does not exist."""
     create_table_query = '''
     CREATE TABLE IF NOT EXISTS Recommendations (
-        item_id SERIAL PRIMARY KEY,
+        customer_id UUID PRIMARY KEY,
+        item_id INT NOT NULL,
         recommendations JSONB NOT NULL,
         version VARCHAR(20) NOT NULL,
         revision INT DEFAULT 1
@@ -89,23 +90,50 @@ def create_table_if_not_exists(conn):
     except Exception as e:
         conn.rollback()
         raise RuntimeError(f"Failed to create table: {e}")
+    finally:
+        cursor.close()
 
-def write_recommendations_to_rds(conn, item_id, recommendations, version):
-    """Write recommendations with multiple collections to RDS."""
-    cursor = conn.cursor()
+def get_customer_id(conn, tenant_name):
+    """Fetch customer_id from the cust_map table using TENANT_NAME."""
+    query = '''
+    SELECT ext_cust_id
+    FROM cust_map
+    WHERE cust_name = %s;
+    '''
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(query, (tenant_name,))
+            result = cursor.fetchone()
+            if not result:
+                raise ValueError(f"No customer_id found for tenant_name: {tenant_name}")
+            return result[0]
+    except Exception as e:
+        raise RuntimeError(f"Failed to fetch customer_id: {e}")
+    finally:
+        cursor.close()
+
+def write_recommendations_to_rds(conn, customer_id, item_id, recommendations, version):
+    """Write recommendations to RDS."""
     formatted_recommendations = json.dumps(recommendations)  # Format collections as JSON
 
     sql = '''
-    INSERT INTO Recommendations (item_id, recommendations, version, revision)
-    VALUES (%s, %s, %s, %s)
-    ON CONFLICT (item_id) DO UPDATE
-    SET recommendations = EXCLUDED.recommendations,
+    INSERT INTO Recommendations (customer_id, item_id, recommendations, version, revision)
+    VALUES (%s, %s, %s, %s, %s)
+    ON CONFLICT (customer_id) DO UPDATE
+    SET item_id = EXCLUDED.item_id,
+        recommendations = EXCLUDED.recommendations,
         version = EXCLUDED.version,
         revision = Recommendations.revision + 1;
     '''
-    cursor.execute(sql, (item_id, formatted_recommendations, version, 1))
-    conn.commit()
-    cursor.close()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (customer_id, item_id, formatted_recommendations, version, 1))
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise RuntimeError(f"Failed to write recommendations: {e}")
+    finally:
+        cursor.close()
 
 
 def recommend(query_features, all_features, mapping, query_category, category_compatibility, num_collections=5, collection_size=5):

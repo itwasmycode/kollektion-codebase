@@ -213,6 +213,9 @@ if __name__ == "__main__":
         # Download category compatibility
         category_compatibility = download_category_compatibility(S3_BUCKET, TENANT_NAME)
 
+        # Fetch customer_id from cust_map table
+        customer_id = get_customer_id(conn, TENANT_NAME)
+
         for image_key in list_images_in_s3_directory(S3_BUCKET, IMAGE_DIR):
             local_image_path = "temp_image.jpg"
             download_image_from_s3(S3_BUCKET, image_key, local_image_path)

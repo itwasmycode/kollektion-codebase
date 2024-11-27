@@ -91,8 +91,6 @@ def create_table_if_not_exists(conn):
     except Exception as e:
         conn.rollback()
         raise RuntimeError(f"Failed to create table: {e}")
-    finally:
-        cursor.close()
 
 def get_customer_id(conn, tenant_name):
     """Fetch customer_id from the cust_map table using TENANT_NAME."""
@@ -110,8 +108,6 @@ def get_customer_id(conn, tenant_name):
             return result[0]
     except Exception as e:
         raise RuntimeError(f"Failed to fetch customer_id: {e}")
-    finally:
-        cursor.close()
 
 def write_recommendations_to_rds(conn, customer_id, item_id, recommendations, version):
     """Write recommendations to RDS."""
@@ -132,8 +128,6 @@ def write_recommendations_to_rds(conn, customer_id, item_id, recommendations, ve
     except Exception as e:
         conn.rollback()
         raise RuntimeError(f"Failed to write recommendations: {e}")
-    finally:
-        cursor.close()
 
 
 def recommend(query_features, all_features, mapping, query_category, category_compatibility, num_collections=5, collection_size=5):

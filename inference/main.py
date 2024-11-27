@@ -178,17 +178,18 @@ def recommend(query_features, all_features, mapping, query_category, category_co
                 break
 
         # Ensure diversity in subsequent collections
-        if collection_id > 1:
-            previous_collection = collections[str(collection_id - 1)]
+        if collection_id > 1 and collection:
+            previous_collection = collections.get(str(collection_id - 1), [])
             if all(item in previous_collection for item in collection):
                 for category in compatible_categories:
                     alternate_items = [
                         item for item in category_groups[category]
                         if item not in collection
                     ]
-                    if alternate_items:
+                    if alternate_items and collection:
                         collection[-1] = alternate_items[0]
                         break
+
 
         # Add collection only if it meets the minimum size
         if collection:

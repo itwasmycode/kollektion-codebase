@@ -109,7 +109,7 @@ def write_recommendations_to_rds(conn, item_id, recommendations, version):
 
 
 def recommend(query_features, all_features, mapping, query_category, category_compatibility, num_collections=5, collection_size=5):
-    """Generate collections ensuring unique categories and at least one different item per collection."""
+    """Generate collections ensuring unique categories and diverse items per collection."""
     compatible_categories = category_compatibility.get(query_category, [])
     indices = [i for i, item in enumerate(mapping) if any(cat in compatible_categories for cat in item["categories"])]
 
@@ -120,40 +120,57 @@ def recommend(query_features, all_features, mapping, query_category, category_co
     compatible_features = all_features[indices]
     similarities = cosine_similarity(query_features, compatible_features)
 
+    # Group items by category
+    category_groups = {category: [] for category in compatible_categories}
+    for i in indices:
+        item = mapping[i]
+        for category in item["categories"]:
+            if category in compatible_categories:
+                category_groups[category].append(item)
+
     # Generate collections
     collections = {}
+    used_items_per_category = {category: set() for category in compatible_categories}
+
     for collection_id in range(1, num_collections + 1):
         collection = []
         used_categories = set()
 
-        # Iterate over sorted items by similarity
-        sorted_indices = np.argsort(similarities[0])[::-1]
-        for i in sorted_indices:
-            item = mapping[indices[i]]
-            # Find the first unused category
-            item_category = next(
-                (cat for cat in item["categories"] if cat in compatible_categories and cat not in used_categories),
-                None
-            )
+        for category in compatible_categories:
+            available_items = [
+                item for item in category_groups[category]
+                if item["id"] not in used_items_per_category[category]
+            ]
 
-            if item_category:
-                collection.append(item)
-                used_categories.add(item_category)
+            # If no unused items are left in this category, start reusing items
+            if not available_items:
+                available_items = category_groups[category]
+
+            if available_items:
+                selected_item = available_items[0]  # Select the first available item
+                collection.append(selected_item)
+                used_items_per_category[category].add(selected_item["id"])
+                used_categories.add(category)
 
             if len(collection) == collection_size:
                 break
 
-        # If not all compatible categories are used, log a warning
-        missing_categories = set(compatible_categories) - used_categories
-        if missing_categories:
-            print(f"Warning: Collection {collection_id} is missing categories: {missing_categories}")
+        # Ensure diversity in subsequent collections
+        if collection_id > 1:
+            previous_collection = collections[str(collection_id - 1)]
+            if all(item in previous_collection for item in collection):
+                for category in compatible_categories:
+                    alternate_items = [
+                        item for item in category_groups[category]
+                        if item not in collection
+                    ]
+                    if alternate_items:
+                        collection[-1] = alternate_items[0]
+                        break
 
-        # Add collection to results
         collections[str(collection_id)] = collection
 
     return collections
-
-
 
 if __name__ == "__main__":
     conn = connect_to_rds()

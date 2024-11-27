@@ -231,7 +231,7 @@ if __name__ == "__main__":
         
             if collections:
                 create_table_if_not_exists(conn)
-                write_recommendations_to_rds(conn, current_item["id"], collections, VERSION)
+                write_recommendations_to_rds(conn, customer_id, current_item["id"], collections, VERSION)
         
             os.remove(local_image_path)
 
